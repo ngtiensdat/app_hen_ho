@@ -137,7 +137,18 @@ class _CommentsScreenState extends State<CommentsScreen> {
                         itemBuilder: (context, index) {
                           final comment = _comments[index];
                           return ListTile(
-                            leading: CircleAvatar(child: Icon(Icons.person)),
+                            leading: CircleAvatar(
+                              backgroundImage: (comment['users']
+                                              ?['avatar_url'] !=
+                                          null &&
+                                      Uri.tryParse(comment['users']
+                                                  ['avatar_url'])
+                                              ?.hasAbsolutePath ==
+                                          true)
+                                  ? NetworkImage(comment['users']['avatar_url'])
+                                  : AssetImage('assets/default_avatar.png')
+                                      as ImageProvider,
+                            ),
                             title: Text(comment['username'],
                                 style: TextStyle(fontWeight: FontWeight.bold)),
                             subtitle: Text(comment['content']),
@@ -416,137 +427,81 @@ class InvitationScreen extends StatefulWidget {
 }
 
 class _InvitationScreenState extends State<InvitationScreen> {
-  final SupabaseClient supabase = Supabase.instance.client;
-  List<Map<String, dynamic>> invitations = [];
-  bool _isLoading = true;
+  List<Map<String, dynamic>> invitations = [
+    {
+      "name": "Ro sé",
+      "avatar":
+          "https://media-cdn-v2.laodong.vn/Storage/NewsPortal/2020/5/19/806401/Giong-Hat-Cua-Rose-R.jpg",
+      "status": "Anh Kim So Huyn ơi <3"
+    },
+    {
+      "name": "CR.7",
+      "avatar":
+          "https://vcdn1-thethao.vnecdn.net/2024/11/06/ronaldo-jpeg-1730843743-9754-1730843766.jpg?w=460&h=0&q=100&dpr=2&fit=crop&s=VWrHCAYZIY85kxTDDEfpug",
+      "status": "Tôi tin cậu liêm giống tôi! Trust u!"
+    },
+    {
+      "name": "Viruss",
+      "avatar": "https://cdn-web.onlive.vn/onlive/image-news/unnamed_ujxk.jpg",
+      "status": "Chào đồng môn, cùng nhập hội với tôi và Jack nhé!"
+    },
+  ];
 
-  @override
-  void initState() {
-    super.initState();
-    _fetchInvitations();
-  }
-
-  Future<void> _fetchInvitations() async {
-    final user = supabase.auth.currentUser;
-    if (user == null) return;
-
-    final response = await supabase
-        .from('friend_requests')
-        .select(
-            'id, sender_id, status, created_at, users:sender_id(full_name, avatar_url)')
-        .eq('receiver_id', user.id)
-        .order('created_at', ascending: false); // Sắp xếp mới nhất trước
-
-    if (response.isNotEmpty) {
-      setState(() {
-        invitations = response.map((invite) {
-          final user = invite['users']; // Lấy thông tin người gửi từ bảng users
-          return {
-            'id': invite['id'],
-            'username': user != null
-                ? user['full_name'] ?? 'Người dùng ẩn danh'
-                : 'Người dùng ẩn danh',
-            'avatar': user != null
-                ? user['avatar_url'] ?? "https://via.placeholder.com/150"
-                : "https://via.placeholder.com/150",
-            'status': invite['status'],
-            'created_at': invite['created_at']
-          };
-        }).toList();
-      });
-    }
-
-    setState(() {
-      _isLoading = false;
-    });
-  }
-
-  void _acceptInvite(int index) async {
-    await supabase
-        .from('friend_requests')
-        .update({'status': 'Đã chấp nhận'}).eq('id', invitations[index]['id']);
-
+  void _acceptInvite(int index) {
     setState(() {
       invitations[index]["status"] = "Đã chấp nhận";
     });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("Bạn đã chấp nhận lời mời kết bạn!")),
-    );
   }
 
-  void _declineInvite(int index) async {
-    await supabase
-        .from('friend_requests')
-        .delete()
-        .eq('id', invitations[index]['id']);
-
+  void _declineInvite(int index) {
     setState(() {
       invitations.removeAt(index);
     });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("Bạn đã từ chối lời mời kết bạn.")),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("Lời mời kết bạn"),
+        title: Text("Lời mời"),
         backgroundColor: Colors.pink,
       ),
-      body: _isLoading
-          ? Center(child: CircularProgressIndicator())
-          : invitations.isEmpty
-              ? Center(
-                  child: Text("Không có lời mời kết bạn!",
-                      style: TextStyle(fontSize: 18, color: Colors.grey)))
-              : ListView.builder(
-                  padding: EdgeInsets.symmetric(vertical: 10, horizontal: 15),
-                  itemCount: invitations.length,
-                  itemBuilder: (context, index) {
-                    final invite = invitations[index];
-
-                    return Card(
-                      margin: EdgeInsets.symmetric(vertical: 8),
-                      elevation: 3,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: ListTile(
-                        contentPadding: EdgeInsets.all(10),
-                        leading: CircleAvatar(
-                          radius: 25,
-                          backgroundImage: NetworkImage(invite['avatar']),
-                        ),
-                        title: Text(invite['username'],
-                            style: TextStyle(
-                                fontWeight: FontWeight.bold, fontSize: 16)),
-                        subtitle: Text(invite["status"],
-                            style: TextStyle(
-                                fontSize: 14, color: Colors.grey[700])),
-                        trailing: invite["status"] == "Chờ phản hồi"
-                            ? Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    icon: Icon(Icons.check_circle,
-                                        color: Colors.green),
-                                    onPressed: () => _acceptInvite(index),
-                                  ),
-                                  IconButton(
-                                    icon: Icon(Icons.cancel, color: Colors.red),
-                                    onPressed: () => _declineInvite(index),
-                                  ),
-                                ],
-                              )
-                            : Icon(Icons.check, color: Colors.grey),
-                      ),
-                    );
-                  },
-                ),
+      body: invitations.isEmpty
+          ? Center(
+              child: Text("Chưa có lời mời nào!",
+                  style: TextStyle(fontSize: 18, color: Colors.grey)))
+          : ListView.builder(
+              itemCount: invitations.length,
+              itemBuilder: (context, index) {
+                return Card(
+                  margin: EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundImage:
+                          NetworkImage(invitations[index]["avatar"]),
+                    ),
+                    title: Text(invitations[index]["name"],
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(invitations[index]["status"]),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (invitations[index]["status"] == "Chờ phản hồi") ...[
+                          IconButton(
+                            icon: Icon(Icons.check_circle, color: Colors.green),
+                            onPressed: () => _acceptInvite(index),
+                          ),
+                          IconButton(
+                            icon: Icon(Icons.cancel, color: Colors.red),
+                            onPressed: () => _declineInvite(index),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
     );
   }
 }
