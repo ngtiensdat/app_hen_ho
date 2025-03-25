@@ -21,6 +21,7 @@ class HomeScreen extends StatefulWidget {
   _HomeScreenState createState() => _HomeScreenState();
 }
 
+//Bình luận
 class CommentsScreen extends StatefulWidget {
   final int postId;
   CommentsScreen({required this.postId});
@@ -85,6 +86,33 @@ class _CommentsScreenState extends State<CommentsScreen> {
     });
   }
 
+  Future<void> _sendFriendRequest(String receiverId) async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+
+    // Lấy thông tin người gửi từ bảng users
+    final senderData = await supabase
+        .from('users')
+        .select('full_name, avatar_url')
+        .eq('id', user.id)
+        .single();
+
+    if (senderData == null) return;
+
+    await supabase.from('friend_requests').insert({
+      'sender_id': user.id,
+      'receiver_id': receiverId,
+      'username': senderData['full_name'],
+      'avatar_url': senderData['avatar_url'],
+      'status': 'Chờ phản hồi',
+      'created_at': DateTime.now().toIso8601String(),
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Đã gửi lời mời kết bạn!')),
+    );
+  }
+
   String _formatUsername(String email) {
     String username = email.split('@')[0];
     if (username.length > 3) {
@@ -125,11 +153,10 @@ class _CommentsScreenState extends State<CommentsScreen> {
                                 Text(comment['likes'].toString()),
                                 SizedBox(width: 10),
                                 ElevatedButton(
-                                  onPressed:
-                                      () {}, // Tạm thời chưa có chức năng
+                                  onPressed: () =>
+                                      _sendFriendRequest(comment['user_id']),
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.blue,
-                                  ),
+                                      backgroundColor: Colors.blue),
                                   child: Text("Kết bạn",
                                       style: TextStyle(color: Colors.white)),
                                 ),
@@ -382,87 +409,144 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+// Lời mời
 class InvitationScreen extends StatefulWidget {
   @override
   _InvitationScreenState createState() => _InvitationScreenState();
 }
 
 class _InvitationScreenState extends State<InvitationScreen> {
-  List<Map<String, dynamic>> invitations = [
-    {
-      "name": "Ro sé",
-      "avatar":
-          "https://media-cdn-v2.laodong.vn/Storage/NewsPortal/2020/5/19/806401/Giong-Hat-Cua-Rose-R.jpg",
-      "status": "Anh Kim So Huyn ơi <3"
-    },
-    {
-      "name": "CR.7",
-      "avatar":
-          "https://vcdn1-thethao.vnecdn.net/2024/11/06/ronaldo-jpeg-1730843743-9754-1730843766.jpg?w=460&h=0&q=100&dpr=2&fit=crop&s=VWrHCAYZIY85kxTDDEfpug",
-      "status": "Tôi tin cậu liêm giống tôi! Trust u!"
-    },
-    {
-      "name": "Viruss",
-      "avatar": "https://cdn-web.onlive.vn/onlive/image-news/unnamed_ujxk.jpg",
-      "status": "Chào đồng môn, cùng nhập hội với tôi và Jack nhé!"
-    },
-  ];
+  final SupabaseClient supabase = Supabase.instance.client;
+  List<Map<String, dynamic>> invitations = [];
+  bool _isLoading = true;
 
-  void _acceptInvite(int index) {
+  @override
+  void initState() {
+    super.initState();
+    _fetchInvitations();
+  }
+
+  Future<void> _fetchInvitations() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+
+    final response = await supabase
+        .from('friend_requests')
+        .select(
+            'id, sender_id, status, created_at, users:sender_id(full_name, avatar_url)')
+        .eq('receiver_id', user.id)
+        .order('created_at', ascending: false); // Sắp xếp mới nhất trước
+
+    if (response.isNotEmpty) {
+      setState(() {
+        invitations = response.map((invite) {
+          final user = invite['users']; // Lấy thông tin người gửi từ bảng users
+          return {
+            'id': invite['id'],
+            'username': user != null
+                ? user['full_name'] ?? 'Người dùng ẩn danh'
+                : 'Người dùng ẩn danh',
+            'avatar': user != null
+                ? user['avatar_url'] ?? "https://via.placeholder.com/150"
+                : "https://via.placeholder.com/150",
+            'status': invite['status'],
+            'created_at': invite['created_at']
+          };
+        }).toList();
+      });
+    }
+
     setState(() {
-      invitations[index]["status"] = "Đã chấp nhận";
+      _isLoading = false;
     });
   }
 
-  void _declineInvite(int index) {
+  void _acceptInvite(int index) async {
+    await supabase
+        .from('friend_requests')
+        .update({'status': 'Đã chấp nhận'}).eq('id', invitations[index]['id']);
+
+    setState(() {
+      invitations[index]["status"] = "Đã chấp nhận";
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("Bạn đã chấp nhận lời mời kết bạn!")),
+    );
+  }
+
+  void _declineInvite(int index) async {
+    await supabase
+        .from('friend_requests')
+        .delete()
+        .eq('id', invitations[index]['id']);
+
     setState(() {
       invitations.removeAt(index);
     });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("Bạn đã từ chối lời mời kết bạn.")),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("Lời mời"),
+        title: Text("Lời mời kết bạn"),
         backgroundColor: Colors.pink,
       ),
-      body: invitations.isEmpty
-          ? Center(
-              child: Text("Chưa có lời mời nào!",
-                  style: TextStyle(fontSize: 18, color: Colors.grey)))
-          : ListView.builder(
-              itemCount: invitations.length,
-              itemBuilder: (context, index) {
-                return Card(
-                  margin: EdgeInsets.symmetric(horizontal: 15, vertical: 10),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundImage:
-                          NetworkImage(invitations[index]["avatar"]),
-                    ),
-                    title: Text(invitations[index]["name"],
-                        style: TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text(invitations[index]["status"]),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (invitations[index]["status"] == "Chờ phản hồi") ...[
-                          IconButton(
-                            icon: Icon(Icons.check_circle, color: Colors.green),
-                            onPressed: () => _acceptInvite(index),
-                          ),
-                          IconButton(
-                            icon: Icon(Icons.cancel, color: Colors.red),
-                            onPressed: () => _declineInvite(index),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
+      body: _isLoading
+          ? Center(child: CircularProgressIndicator())
+          : invitations.isEmpty
+              ? Center(
+                  child: Text("Không có lời mời kết bạn!",
+                      style: TextStyle(fontSize: 18, color: Colors.grey)))
+              : ListView.builder(
+                  padding: EdgeInsets.symmetric(vertical: 10, horizontal: 15),
+                  itemCount: invitations.length,
+                  itemBuilder: (context, index) {
+                    final invite = invitations[index];
+
+                    return Card(
+                      margin: EdgeInsets.symmetric(vertical: 8),
+                      elevation: 3,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: ListTile(
+                        contentPadding: EdgeInsets.all(10),
+                        leading: CircleAvatar(
+                          radius: 25,
+                          backgroundImage: NetworkImage(invite['avatar']),
+                        ),
+                        title: Text(invite['username'],
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 16)),
+                        subtitle: Text(invite["status"],
+                            style: TextStyle(
+                                fontSize: 14, color: Colors.grey[700])),
+                        trailing: invite["status"] == "Chờ phản hồi"
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: Icon(Icons.check_circle,
+                                        color: Colors.green),
+                                    onPressed: () => _acceptInvite(index),
+                                  ),
+                                  IconButton(
+                                    icon: Icon(Icons.cancel, color: Colors.red),
+                                    onPressed: () => _declineInvite(index),
+                                  ),
+                                ],
+                              )
+                            : Icon(Icons.check, color: Colors.grey),
+                      ),
+                    );
+                  },
+                ),
     );
   }
 }
@@ -756,19 +840,93 @@ class ChatScreen extends StatelessWidget {
   }
 }
 
-class ProfileScreen extends StatelessWidget {
-  final String avatarPath = "assets/images/avatar.png"; // Ảnh đại diện
-  final String fullName = "Kim So Huyn";
-  final String description =
-      "Tôi là một người trung thủy, tôi đề cao tình yêu, hãy yêu tôi :)";
-  final int likedBy = 120;
+// Trang cá nhân
+class ProfileScreen extends StatefulWidget {
+  @override
+  _ProfileScreenState createState() => _ProfileScreenState();
+}
 
-  final List<String> uploadedImages = [
-    "assets/images/photo1.jpg",
-    "assets/images/photo2.jpg",
-    "assets/images/photo3.jpg",
-    "assets/images/photo4.jpg",
-  ];
+class _ProfileScreenState extends State<ProfileScreen> {
+  final SupabaseClient supabase = Supabase.instance.client;
+  String avatarUrl = "https://via.placeholder.com/150";
+  String fullName = "";
+  String bio = "";
+  TextEditingController bioController = TextEditingController();
+  TextEditingController avatarController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchUserProfile();
+  }
+
+  Future<void> _fetchUserProfile() async {
+    final user = supabase.auth.currentUser;
+    if (user != null) {
+      final response = await supabase
+          .from('users')
+          .select('full_name, avatar_url, bio') // Thêm cột bio
+          .eq('id', user.id)
+          .single();
+
+      setState(() {
+        fullName = response['full_name'] ?? user.email!.split('@')[0];
+        avatarUrl = response['avatar_url'] ?? avatarUrl;
+        bio = response['bio'] ?? "";
+      });
+    }
+  }
+
+  Future<void> _updateProfile() async {
+    avatarController.text = avatarUrl;
+    bioController.text = bio;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text("Cập nhật thông tin"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: avatarController,
+                decoration: InputDecoration(labelText: "Nhập link ảnh avatar"),
+              ),
+              TextField(
+                controller: bioController,
+                decoration: InputDecoration(labelText: "Nhập mô tả"),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text("Hủy"),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final user = supabase.auth.currentUser;
+                if (user != null) {
+                  await supabase.from('users').update({
+                    'avatar_url': avatarController.text,
+                    'bio': bioController.text
+                  }).eq('id', user.id);
+
+                  setState(() {
+                    avatarUrl = avatarController.text;
+                    bio = bioController.text;
+                  });
+                }
+                Navigator.pop(context);
+              },
+              child: Text("Lưu"),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -778,73 +936,32 @@ class ProfileScreen extends StatelessWidget {
       body: Padding(
         padding: EdgeInsets.all(16),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // Ảnh đại diện + Thông tin
-            Row(
-              children: [
-                CircleAvatar(
-                  radius: 40,
-                  backgroundImage: AssetImage(avatarPath),
-                ),
-                SizedBox(width: 16),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      fullName,
-                      style:
-                          TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                    ),
-                    Row(
-                      children: [
-                        Icon(Icons.favorite, color: Colors.red, size: 20),
-                        SizedBox(width: 5),
-                        Text("$likedBy người đã thả tim",
-                            style: TextStyle(fontSize: 16)),
-                      ],
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            SizedBox(height: 16),
-
-            // Mô tả cá nhân
-            Text(
-              "Mô tả",
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            SizedBox(height: 5),
-            Text(
-              description,
-              style: TextStyle(fontSize: 16, color: Colors.black54),
-            ),
-            SizedBox(height: 16),
-
-            // Ảnh đã tải lên
-            Text(
-              "Ảnh đã tải lên",
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            SizedBox(height: 10),
-
-            Expanded(
-              child: GridView.builder(
-                itemCount: uploadedImages.length,
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  crossAxisSpacing: 8,
-                  mainAxisSpacing: 8,
-                ),
-                itemBuilder: (context, index) {
-                  return ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child:
-                        Image.asset(uploadedImages[index], fit: BoxFit.cover),
-                  );
-                },
+            GestureDetector(
+              onTap: _updateProfile, // Sửa lại: trước đây gọi _updateAvatar
+              child: CircleAvatar(
+                radius: 50,
+                backgroundImage: NetworkImage(avatarUrl),
               ),
+            ),
+            SizedBox(height: 16),
+            Text(fullName,
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+            SizedBox(height: 16),
+            ElevatedButton(
+              onPressed:
+                  _updateProfile, // Sửa lại: Gọi _updateProfile thay vì _updateAvatar
+              child: Text("Cập nhật avatar"),
+            ),
+            SizedBox(height: 8),
+            Text("Mô tả:",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text(bio, style: TextStyle(fontSize: 16)),
+            SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _updateProfile,
+              child: Text("Cập nhật thông tin"),
             ),
           ],
         ),
