@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(DatingApp());
@@ -19,8 +21,169 @@ class HomeScreen extends StatefulWidget {
   _HomeScreenState createState() => _HomeScreenState();
 }
 
+class CommentsScreen extends StatefulWidget {
+  final int postId;
+  CommentsScreen({required this.postId});
+
+  @override
+  _CommentsScreenState createState() => _CommentsScreenState();
+}
+
+class _CommentsScreenState extends State<CommentsScreen> {
+  final SupabaseClient supabase = Supabase.instance.client;
+  final TextEditingController _commentController = TextEditingController();
+  List<Map<String, dynamic>> _comments = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchComments();
+  }
+
+  Future<void> _fetchComments() async {
+    final response = await supabase
+        .from('comments')
+        .select()
+        .eq('post_id', widget.postId)
+        .order('created_at', ascending: false);
+    setState(() {
+      _comments = response;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _addComment() async {
+    final user = supabase.auth.currentUser;
+    if (user == null || _commentController.text.isEmpty) return;
+
+    String username = _formatUsername(user.email!);
+
+    final newComment = {
+      'post_id': widget.postId,
+      'user_id': user.id,
+      'username': username,
+      'content': _commentController.text,
+      'likes': 0,
+      'created_at': DateTime.now().toIso8601String(),
+    };
+
+    await supabase.from('comments').insert(newComment);
+
+    setState(() {
+      _comments.insert(0, newComment);
+      _commentController.clear();
+    });
+  }
+
+  Future<void> _likeComment(int commentId, int currentLikes) async {
+    await supabase
+        .from('comments')
+        .update({'likes': currentLikes + 1}).eq('id', commentId);
+    setState(() {
+      _comments.firstWhere((c) => c['id'] == commentId)['likes'] += 1;
+    });
+  }
+
+  String _formatUsername(String email) {
+    String username = email.split('@')[0];
+    if (username.length > 3) {
+      return username.substring(0, username.length - 3) + "***";
+    }
+    return username;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text("Bình luận"), backgroundColor: Colors.pink),
+      body: Column(
+        children: [
+          Expanded(
+            child: _isLoading
+                ? Center(child: CircularProgressIndicator())
+                : _comments.isEmpty
+                    ? Center(child: Text("Chưa có bình luận nào."))
+                    : ListView.builder(
+                        itemCount: _comments.length,
+                        itemBuilder: (context, index) {
+                          final comment = _comments[index];
+                          return ListTile(
+                            leading: CircleAvatar(child: Icon(Icons.person)),
+                            title: Text(comment['username'],
+                                style: TextStyle(fontWeight: FontWeight.bold)),
+                            subtitle: Text(comment['content']),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon:
+                                      Icon(Icons.thumb_up, color: Colors.pink),
+                                  onPressed: () => _likeComment(
+                                      comment['id'], comment['likes']),
+                                ),
+                                Text(comment['likes'].toString()),
+                                SizedBox(width: 10),
+                                ElevatedButton(
+                                  onPressed:
+                                      () {}, // Tạm thời chưa có chức năng
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.blue,
+                                  ),
+                                  child: Text("Kết bạn",
+                                      style: TextStyle(color: Colors.white)),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+          ),
+          Container(
+            padding: EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              boxShadow: [
+                BoxShadow(color: Colors.grey.shade300, blurRadius: 5),
+              ],
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _commentController,
+                    decoration: InputDecoration(
+                      hintText: "Viết bình luận...",
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 10),
+                    ),
+                  ),
+                ),
+                SizedBox(width: 10),
+                ElevatedButton(
+                  onPressed: _addComment,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.pink,
+                    shape: CircleBorder(),
+                  ),
+                  child: Icon(Icons.send, color: Colors.white),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
+  final supabase = Supabase.instance.client;
+
+  final TextEditingController _postController = TextEditingController();
 
   void _onItemTapped(int index) {
     switch (index) {
@@ -52,66 +215,150 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    ensureUserExists(); // Kiểm tra và thêm user nếu chưa có
+  }
+
+  Future<void> ensureUserExists() async {
+    final user = supabase.auth.currentUser;
+    if (user == null) return;
+
+    final existingUser =
+        await supabase.from('users').select().eq('id', user.id);
+
+    if (existingUser.isEmpty) {
+      await supabase.from('users').insert({
+        'id': user.id,
+        'email': user.email,
+        'created_at': DateTime.now().toIso8601String(),
+      }).catchError((error) {
+        print("Lỗi khi thêm user: $error");
+      });
+    }
+  }
+
+  Future<void> _addPost() async {
+    final user = supabase.auth.currentUser;
+    if (user == null || _postController.text.isEmpty) return;
+
+    await ensureUserExists(); // Đảm bảo user tồn tại trước khi đăng bài
+
+    await supabase.from('posts').insert({
+      'user_id': user.id,
+      'username': user.email,
+      'content': _postController.text,
+      'created_at': DateTime.now().toIso8601String(),
+    }).catchError((error) {
+      print("Lỗi khi thêm bài viết: $error");
+    });
+
+    _postController.clear();
+    setState(() {});
+  }
+
+  Future<void> _deletePost(int postId) async {
+    await supabase.from('posts').delete().eq('id', postId);
+    setState(() {});
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchPosts() async {
+    final response = await supabase
+        .from('posts')
+        .select()
+        .order('created_at', ascending: false);
+    return response;
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text("LoveMatch"),
         backgroundColor: Colors.pink,
-        actions: [
-          IconButton(
-            icon: Icon(Icons.notifications),
-            onPressed: () {},
-          ),
-          IconButton(
-            icon: Icon(Icons.backpack),
-            onPressed: () {},
-          ),
-        ],
       ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              "Gặp gỡ người mới!",
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-            SizedBox(height: 20),
-            Card(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
-              ),
-              elevation: 5,
-              child: Container(
-                width: 300,
-                height: 400,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(20),
-                  image: DecorationImage(
-                    image: NetworkImage(
-                        'https://i.scdn.co/image/ab676161000051745a79a6ca8c60e4ec1440be53'),
-                    fit: BoxFit.cover,
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(10.0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _postController,
+                    decoration: InputDecoration(
+                      hintText: "Viết bài...",
+                      border: OutlineInputBorder(),
+                    ),
                   ),
                 ),
-              ),
-            ),
-            SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
                 IconButton(
-                  icon: Icon(Icons.close, color: Colors.red, size: 40),
-                  onPressed: () {},
-                ),
-                SizedBox(width: 50),
-                IconButton(
-                  icon: Icon(Icons.favorite, color: Colors.green, size: 40),
-                  onPressed: () {},
+                  icon: Icon(Icons.send, color: Colors.pink),
+                  onPressed: _addPost,
                 ),
               ],
             ),
-          ],
-        ),
+          ),
+          Expanded(
+            child: StreamBuilder<List<Map<String, dynamic>>>(
+              stream: supabase.from('posts').stream(
+                  primaryKey: ['id']).order('created_at', ascending: false),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return Center(child: CircularProgressIndicator());
+                }
+
+                final posts = snapshot.data!;
+                return ListView.builder(
+                  itemCount: posts.length,
+                  itemBuilder: (context, index) {
+                    final post = posts[index];
+                    final currentUser = supabase.auth.currentUser;
+
+                    return Card(
+                      margin: EdgeInsets.symmetric(vertical: 5, horizontal: 10),
+                      child: Padding(
+                        padding: const EdgeInsets.all(10.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(post['username'],
+                                    style:
+                                        TextStyle(fontWeight: FontWeight.bold)),
+                                if (currentUser != null &&
+                                    post['user_id'] == currentUser.id)
+                                  IconButton(
+                                    icon: Icon(Icons.delete, color: Colors.red),
+                                    onPressed: () => _deletePost(post['id']),
+                                  ),
+                              ],
+                            ),
+                            SizedBox(height: 5),
+                            Text(post['content']),
+                            SizedBox(height: 10),
+                            TextButton(
+                              onPressed: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) =>
+                                      CommentsScreen(postId: post['id']),
+                                ),
+                              ),
+                              child: Text("Bình luận"),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
       ),
       bottomNavigationBar: BottomNavigationBar(
         items: [
@@ -606,76 +853,261 @@ class ProfileScreen extends StatelessWidget {
   }
 }
 
-class SettingsScreen extends StatelessWidget {
+// Đổi mk
+class ChangePasswordScreen extends StatefulWidget {
+  @override
+  _ChangePasswordScreenState createState() => _ChangePasswordScreenState();
+}
+
+class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
+  final SupabaseClient supabase = Supabase.instance.client;
+  final TextEditingController _newPasswordController = TextEditingController();
+  final TextEditingController _confirmPasswordController =
+      TextEditingController();
+  bool _isLoading = false;
+  bool _isPasswordVisible = false;
+  bool _isConfirmPasswordVisible = false;
+  String _message = "";
+
+  Future<void> _changePassword() async {
+    setState(() {
+      _isLoading = true;
+      _message = "";
+    });
+
+    final newPassword = _newPasswordController.text.trim();
+    final confirmPassword = _confirmPasswordController.text.trim();
+
+    if (newPassword.length < 6) {
+      setState(() {
+        _isLoading = false;
+        _message = "Mật khẩu phải có ít nhất 6 ký tự.";
+      });
+      return;
+    }
+
+    if (newPassword != confirmPassword) {
+      setState(() {
+        _isLoading = false;
+        _message = "Mật khẩu xác nhận không khớp.";
+      });
+      return;
+    }
+
+    try {
+      await supabase.auth.updateUser(UserAttributes(password: newPassword));
+      setState(() {
+        _message = "Đổi mật khẩu thành công!";
+      });
+    } catch (e) {
+      setState(() {
+        _message = "Lỗi: ${e.toString()}";
+      });
+    }
+
+    setState(() {
+      _isLoading = false;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text("Cài đặt"), backgroundColor: Colors.pink),
+      appBar: AppBar(title: Text("Đổi mật khẩu"), backgroundColor: Colors.pink),
+      body: Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text("Nhập mật khẩu mới:", style: TextStyle(fontSize: 16)),
+            SizedBox(height: 10),
+            TextField(
+              controller: _newPasswordController,
+              obscureText: !_isPasswordVisible,
+              decoration: InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: "Mật khẩu mới",
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _isPasswordVisible
+                        ? Icons.visibility
+                        : Icons.visibility_off,
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _isPasswordVisible = !_isPasswordVisible;
+                    });
+                  },
+                ),
+              ),
+            ),
+            SizedBox(height: 20),
+            Text("Xác nhận lại mật khẩu:", style: TextStyle(fontSize: 16)),
+            SizedBox(height: 10),
+            TextField(
+              controller: _confirmPasswordController,
+              obscureText: !_isConfirmPasswordVisible,
+              decoration: InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: "Nhập lại mật khẩu",
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _isConfirmPasswordVisible
+                        ? Icons.visibility
+                        : Icons.visibility_off,
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _isConfirmPasswordVisible = !_isConfirmPasswordVisible;
+                    });
+                  },
+                ),
+              ),
+            ),
+            SizedBox(height: 20),
+            _isLoading
+                ? Center(child: CircularProgressIndicator())
+                : ElevatedButton(
+                    onPressed: _changePassword,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.pink,
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: Center(
+                      child: Text("Cập nhật mật khẩu",
+                          style: TextStyle(fontSize: 16, color: Colors.white)),
+                    ),
+                  ),
+            SizedBox(height: 10),
+            if (_message.isNotEmpty)
+              Center(
+                child: Text(
+                  _message,
+                  style: TextStyle(
+                      color: _message.contains("thành công")
+                          ? Colors.green
+                          : Colors.red),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class SettingsScreen extends StatefulWidget {
+  @override
+  _SettingsScreenState createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  final SupabaseClient supabase = Supabase.instance.client;
+  String _language = "vi";
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLanguage();
+  }
+
+  Future<void> _loadLanguage() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _language = prefs.getString('language') ?? "vi";
+    });
+  }
+
+  Future<void> _changeLanguage(String lang) async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString('language', lang);
+    setState(() {
+      _language = lang;
+    });
+  }
+
+  Future<void> _signOut(BuildContext context) async {
+    await supabase.auth.signOut();
+    Navigator.pushReplacementNamed(context, '/login');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+          title: Text(_language == "vi" ? "Cài đặt" : "Settings"),
+          backgroundColor: Colors.pink),
       body: ListView(
         children: [
-          // Đổi mật khẩu
+          ListTile(
+            leading: Icon(Icons.language, color: Colors.green),
+            title:
+                Text(_language == "vi" ? "Chọn ngôn ngữ" : "Choose Language"),
+            trailing: DropdownButton<String>(
+              value: _language,
+              onChanged: (String? newValue) {
+                if (newValue != null) {
+                  _changeLanguage(newValue);
+                }
+              },
+              items: [
+                DropdownMenuItem(value: "vi", child: Text("🇻🇳 Tiếng Việt")),
+                DropdownMenuItem(value: "en", child: Text("🇺🇸 English")),
+              ],
+            ),
+          ),
+          Divider(),
           ListTile(
             leading: Icon(Icons.lock, color: Colors.blue),
-            title: Text("Đổi mật khẩu"),
+            title: Text(_language == "vi" ? "Đổi mật khẩu" : "Change Password"),
             trailing: Icon(Icons.arrow_forward_ios, size: 16),
             onTap: () {
-              // TODO: Thêm chức năng đổi mật khẩu
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => ChangePasswordScreen()),
+              );
             },
           ),
           Divider(),
-
-          // Thông tin hệ thống
           ListTile(
             leading: Icon(Icons.info, color: Colors.green),
-            title: Text("Thông tin hệ thống"),
+            title: Text(_language == "vi"
+                ? "Thông tin hệ thống"
+                : "System Information"),
             trailing: Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () {
-              // TODO: Hiển thị thông tin hệ thống
-            },
+            onTap: () {},
           ),
           Divider(),
-
-          // Chính sách bảo mật
           ListTile(
             leading: Icon(Icons.privacy_tip, color: Colors.orange),
-            title: Text("Chính sách bảo mật"),
+            title: Text(
+                _language == "vi" ? "Chính sách bảo mật" : "Privacy Policy"),
             trailing: Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () {
-              // TODO: Hiển thị chính sách bảo mật
-            },
+            onTap: () {},
           ),
           Divider(),
-
-          // Thông báo & Quyền riêng tư
           ListTile(
             leading: Icon(Icons.notifications, color: Colors.redAccent),
-            title: Text("Thông báo & Quyền riêng tư"),
+            title: Text(_language == "vi"
+                ? "Thông báo & Quyền riêng tư"
+                : "Notifications & Privacy"),
             trailing: Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () {
-              // TODO: Cài đặt thông báo
-            },
+            onTap: () {},
           ),
           Divider(),
-
-          // Trợ giúp & Hỗ trợ
           ListTile(
             leading: Icon(Icons.help_outline, color: Colors.purple),
-            title: Text("Trợ giúp & Hỗ trợ"),
+            title: Text(
+                _language == "vi" ? "Trợ giúp & Hỗ trợ" : "Help & Support"),
             trailing: Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () {
-              // TODO: Chuyển đến trang hỗ trợ
-            },
+            onTap: () {},
           ),
           Divider(),
-
-          // Đăng xuất
           ListTile(
             leading: Icon(Icons.logout, color: Colors.red),
-            title: Text("Đăng xuất"),
+            title: Text(_language == "vi" ? "Đăng xuất" : "Log out"),
             trailing: Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () {
-              // TODO: Xử lý đăng xuất
-            },
+            onTap: () => _signOut(context),
           ),
         ],
       ),
