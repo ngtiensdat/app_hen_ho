@@ -1,8 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:io';
+
+class MyHttpOverrides extends HttpOverrides {
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    return super.createHttpClient(context)
+      ..badCertificateCallback =
+          (X509Certificate cert, String host, int port) => true;
+  }
+}
 
 void main() {
+  HttpOverrides.global = MyHttpOverrides();
   runApp(DatingApp());
 }
 
@@ -21,7 +32,6 @@ class HomeScreen extends StatefulWidget {
   _HomeScreenState createState() => _HomeScreenState();
 }
 
-//Bình luận
 class CommentsScreen extends StatefulWidget {
   final int postId;
   CommentsScreen({required this.postId});
@@ -60,21 +70,17 @@ class _CommentsScreenState extends State<CommentsScreen> {
 
     String username = _formatUsername(user.email!);
 
-    final newComment = {
+    await supabase.from('comments').insert({
       'post_id': widget.postId,
       'user_id': user.id,
       'username': username,
       'content': _commentController.text,
       'likes': 0,
       'created_at': DateTime.now().toIso8601String(),
-    };
-
-    await supabase.from('comments').insert(newComment);
-
-    setState(() {
-      _comments.insert(0, newComment);
-      _commentController.clear();
     });
+
+    _commentController.clear();
+    _fetchComments();
   }
 
   Future<void> _likeComment(int commentId, int currentLikes) async {
@@ -82,28 +88,34 @@ class _CommentsScreenState extends State<CommentsScreen> {
         .from('comments')
         .update({'likes': currentLikes + 1}).eq('id', commentId);
     setState(() {
-      _comments.firstWhere((c) => c['id'] == commentId)['likes'] += 1;
+      final index = _comments.indexWhere((c) => c['id'] == commentId);
+      if (index != -1) {
+        _comments[index]['likes'] = currentLikes + 1;
+      }
     });
   }
 
   Future<void> _sendFriendRequest(String receiverId) async {
     final user = supabase.auth.currentUser;
-    if (user == null) return;
+    if (user == null || user.id == receiverId) return;
 
-    // Lấy thông tin người gửi từ bảng users
-    final senderData = await supabase
-        .from('users')
-        .select('full_name, avatar_url')
-        .eq('id', user.id)
-        .single();
+    final existingRequest = await supabase
+        .from('friend_requests')
+        .select()
+        .eq('sender_id', user.id)
+        .eq('receiver_id', receiverId)
+        .maybeSingle();
 
-    if (senderData == null) return;
+    if (existingRequest != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Bạn đã gửi lời mời trước đó!')),
+      );
+      return;
+    }
 
     await supabase.from('friend_requests').insert({
       'sender_id': user.id,
       'receiver_id': receiverId,
-      'username': senderData['full_name'],
-      'avatar_url': senderData['avatar_url'],
       'status': 'Chờ phản hồi',
       'created_at': DateTime.now().toIso8601String(),
     });
@@ -115,10 +127,21 @@ class _CommentsScreenState extends State<CommentsScreen> {
 
   String _formatUsername(String email) {
     String username = email.split('@')[0];
-    if (username.length > 3) {
-      return username.substring(0, username.length - 3) + "***";
+    return username.length > 3
+        ? username.substring(0, username.length - 3) + "***"
+        : username;
+  }
+
+  ImageProvider _getAvatar(Map<String, dynamic>? user) {
+    try {
+      final avatarUrl = user?['avatar_url'];
+      if (avatarUrl != null && Uri.parse(avatarUrl).isAbsolute) {
+        return NetworkImage(avatarUrl);
+      }
+    } catch (e) {
+      print("Lỗi tải avatar: $e");
     }
-    return username;
+    return AssetImage('assets/default_avatar.png');
   }
 
   @override
@@ -138,16 +161,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
                           final comment = _comments[index];
                           return ListTile(
                             leading: CircleAvatar(
-                              backgroundImage: (comment['users']
-                                              ?['avatar_url'] !=
-                                          null &&
-                                      Uri.tryParse(comment['users']
-                                                  ['avatar_url'])
-                                              ?.hasAbsolutePath ==
-                                          true)
-                                  ? NetworkImage(comment['users']['avatar_url'])
-                                  : AssetImage('assets/default_avatar.png')
-                                      as ImageProvider,
+                              backgroundImage: _getAvatar(comment['users']),
                             ),
                             title: Text(comment['username'],
                                 style: TextStyle(fontWeight: FontWeight.bold)),
@@ -182,7 +196,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
             decoration: BoxDecoration(
               color: Colors.white,
               boxShadow: [
-                BoxShadow(color: Colors.grey.shade300, blurRadius: 5),
+                BoxShadow(color: Colors.grey.shade300, blurRadius: 5)
               ],
             ),
             child: Row(
@@ -193,8 +207,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
                     decoration: InputDecoration(
                       hintText: "Viết bình luận...",
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
+                          borderRadius: BorderRadius.circular(20)),
                       contentPadding: EdgeInsets.symmetric(horizontal: 10),
                     ),
                   ),
@@ -203,9 +216,7 @@ class _CommentsScreenState extends State<CommentsScreen> {
                 ElevatedButton(
                   onPressed: _addComment,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.pink,
-                    shape: CircleBorder(),
-                  ),
+                      backgroundColor: Colors.pink, shape: CircleBorder()),
                   child: Icon(Icons.send, color: Colors.white),
                 ),
               ],
@@ -420,43 +431,77 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// Lời mời
 class InvitationScreen extends StatefulWidget {
   @override
   _InvitationScreenState createState() => _InvitationScreenState();
 }
 
 class _InvitationScreenState extends State<InvitationScreen> {
-  List<Map<String, dynamic>> invitations = [
-    {
-      "name": "Ro sé",
-      "avatar":
-          "https://media-cdn-v2.laodong.vn/Storage/NewsPortal/2020/5/19/806401/Giong-Hat-Cua-Rose-R.jpg",
-      "status": "Anh Kim So Huyn ơi <3"
-    },
-    {
-      "name": "CR.7",
-      "avatar":
-          "https://vcdn1-thethao.vnecdn.net/2024/11/06/ronaldo-jpeg-1730843743-9754-1730843766.jpg?w=460&h=0&q=100&dpr=2&fit=crop&s=VWrHCAYZIY85kxTDDEfpug",
-      "status": "Tôi tin cậu liêm giống tôi! Trust u!"
-    },
-    {
-      "name": "Viruss",
-      "avatar": "https://cdn-web.onlive.vn/onlive/image-news/unnamed_ujxk.jpg",
-      "status": "Chào đồng môn, cùng nhập hội với tôi và Jack nhé!"
-    },
-  ];
+  final SupabaseClient supabase = Supabase.instance.client;
+  List<Map<String, dynamic>> invitations = [];
+  bool isLoading = true;
 
-  void _acceptInvite(int index) {
-    setState(() {
-      invitations[index]["status"] = "Đã chấp nhận";
-    });
+  @override
+  void initState() {
+    super.initState();
+    fetchInvitations();
   }
 
-  void _declineInvite(int index) {
-    setState(() {
-      invitations.removeAt(index);
-    });
+  Future<void> fetchInvitations() async {
+    try {
+      final userId = supabase.auth.currentUser?.id;
+      if (userId == null) return;
+
+      final response = await supabase
+          .from('friend_requests')
+          .select(
+              'id, sender_id, status, users!friend_requests_sender_id_fkey(full_name, avatar_url)')
+          .eq('receiver_id', userId);
+
+      setState(() {
+        invitations = response
+            .map<Map<String, dynamic>>((req) => {
+                  "id": req['id'],
+                  "name": req['users']['full_name'] ?? "Ẩn danh",
+                  "avatar": req['users']['avatar_url'] ?? "",
+                  "status": req['status']
+                })
+            .toList();
+        isLoading = false;
+      });
+    } catch (e) {
+      print("Error fetching invitations: $e");
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
+  void _acceptInvite(int index) async {
+    try {
+      await supabase
+          .from('friend_requests')
+          .update({"status": "accepted"}).eq('id', invitations[index]['id']);
+      setState(() {
+        invitations[index]["status"] = "Đã chấp nhận";
+      });
+    } catch (e) {
+      print("Error accepting invite: $e");
+    }
+  }
+
+  void _declineInvite(int index) async {
+    try {
+      await supabase
+          .from('friend_requests')
+          .delete()
+          .eq('id', invitations[index]['id']);
+      setState(() {
+        invitations.removeAt(index);
+      });
+    } catch (e) {
+      print("Error declining invite: $e");
+    }
   }
 
   @override
@@ -466,42 +511,51 @@ class _InvitationScreenState extends State<InvitationScreen> {
         title: Text("Lời mời"),
         backgroundColor: Colors.pink,
       ),
-      body: invitations.isEmpty
-          ? Center(
-              child: Text("Chưa có lời mời nào!",
-                  style: TextStyle(fontSize: 18, color: Colors.grey)))
-          : ListView.builder(
-              itemCount: invitations.length,
-              itemBuilder: (context, index) {
-                return Card(
-                  margin: EdgeInsets.symmetric(horizontal: 15, vertical: 10),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundImage:
-                          NetworkImage(invitations[index]["avatar"]),
-                    ),
-                    title: Text(invitations[index]["name"],
-                        style: TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text(invitations[index]["status"]),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (invitations[index]["status"] == "Chờ phản hồi") ...[
-                          IconButton(
-                            icon: Icon(Icons.check_circle, color: Colors.green),
-                            onPressed: () => _acceptInvite(index),
-                          ),
-                          IconButton(
-                            icon: Icon(Icons.cancel, color: Colors.red),
-                            onPressed: () => _declineInvite(index),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
+      body: isLoading
+          ? Center(child: CircularProgressIndicator())
+          : invitations.isEmpty
+              ? Center(
+                  child: Text("Chưa có lời mời nào!",
+                      style: TextStyle(fontSize: 18, color: Colors.grey)))
+              : ListView.builder(
+                  itemCount: invitations.length,
+                  itemBuilder: (context, index) {
+                    return Card(
+                      margin:
+                          EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundImage:
+                              invitations[index]["avatar"].isNotEmpty
+                                  ? NetworkImage(invitations[index]["avatar"])
+                                  : null,
+                          child: invitations[index]["avatar"].isEmpty
+                              ? Icon(Icons.person)
+                              : null,
+                        ),
+                        title: Text(invitations[index]["name"],
+                            style: TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text(invitations[index]["status"]),
+                        trailing: invitations[index]["status"] == "pending"
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: Icon(Icons.check_circle,
+                                        color: Colors.green),
+                                    onPressed: () => _acceptInvite(index),
+                                  ),
+                                  IconButton(
+                                    icon: Icon(Icons.cancel, color: Colors.red),
+                                    onPressed: () => _declineInvite(index),
+                                  ),
+                                ],
+                              )
+                            : null,
+                      ),
+                    );
+                  },
+                ),
     );
   }
 }
@@ -803,7 +857,7 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   final SupabaseClient supabase = Supabase.instance.client;
-  String avatarUrl = "https://via.placeholder.com/150";
+  String avatarUrl = "https://placehold.co/";
   String fullName = "";
   String bio = "";
   TextEditingController bioController = TextEditingController();
@@ -820,7 +874,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (user != null) {
       final response = await supabase
           .from('users')
-          .select('full_name, avatar_url, bio') // Thêm cột bio
+          .select('full_name, avatar_url, bio')
           .eq('id', user.id)
           .single();
 
@@ -894,7 +948,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             GestureDetector(
-              onTap: _updateProfile, // Sửa lại: trước đây gọi _updateAvatar
+              onTap: _updateProfile,
               child: CircleAvatar(
                 radius: 50,
                 backgroundImage: NetworkImage(avatarUrl),
@@ -905,8 +959,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
             SizedBox(height: 16),
             ElevatedButton(
-              onPressed:
-                  _updateProfile, // Sửa lại: Gọi _updateProfile thay vì _updateAvatar
+              onPressed: _updateProfile,
               child: Text("Cập nhật avatar"),
             ),
             SizedBox(height: 8),
@@ -1142,12 +1195,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           Divider(),
           ListTile(
-            leading: Icon(Icons.info, color: Colors.green),
-            title: Text(_language == "vi"
-                ? "Thông tin hệ thống"
-                : "System Information"),
+            leading: Icon(Icons.group, color: Colors.green),
+            title: Text(
+                _language == "vi" ? "Thông tin nhóm" : "Group Information"),
             trailing: Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () {},
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => GroupInfoScreen()),
+              );
+            },
           ),
           Divider(),
           ListTile(
@@ -1182,6 +1239,66 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => _signOut(context),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class GroupInfoScreen extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text("Thông tin nhóm"),
+        backgroundColor: Colors.pink,
+      ),
+      body: Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "Nhóm phát triển ứng dụng gồm 3 thành viên:",
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: 10),
+            ListTile(
+              leading: CircleAvatar(
+                backgroundImage: AssetImage('assets/images/avatar1.png'),
+                radius: 40,
+              ),
+              title: Text(
+                "Nguyễn Tiến Đạt - 22014059",
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+            ),
+            ListTile(
+              leading: CircleAvatar(
+                backgroundImage: AssetImage('assets/images/avatar2.png'),
+                radius: 40,
+              ),
+              title: Text(
+                "Dương Thị Thu Hiền - 22014071",
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+            ),
+            ListTile(
+              leading: CircleAvatar(
+                backgroundImage: AssetImage('assets/images/avatar3.png'),
+                radius: 40,
+              ),
+              title: Text(
+                "Đỗ Thị Thúy Ngọc - 22010490",
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+            ),
+            SizedBox(height: 20),
+            Text(
+              "Chúng em xin được cảm ơn thầy ạ!",
+              style: TextStyle(fontSize: 20, fontStyle: FontStyle.italic),
+            ),
+          ],
+        ),
       ),
     );
   }
